@@ -50,7 +50,9 @@ class GraphState(TypedDict):
     search_results: str
     website: str
     email: str
+    email_context: str
     phone: str
+    phone_context: str
     products: str
 
 # -------------------- NODES --------------------
@@ -98,40 +100,70 @@ def get_contact_info(state):
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
-                return soup.get_text(separator="\n")
+                return soup
             else:
                 print(f"⚠️ Failed to fetch {url} - Status Code: {response.status_code}")
         except requests.exceptions.RequestException as e:
             print(f"⚠️ Error fetching {url}: {e}")
         return None
 
-    # Try multiple common paths for contact information
-    text = None
-    for suffix in ["/contact", "/contacts", "/about", "/support", "/help"]:
-        contact_url = website.rstrip("/") + suffix
-        text = fetch_and_parse(contact_url)
-        if text:
-            print(f"🔍 Parsed text from {contact_url}:\n{text[:500]}")  # Log first 500 characters
-            break
+    # Collect all pages and parse them
+    suffixes = ["/contact", "/contacts", "/about", "/support", "/help"]
+    pages = []
+
+    for suffix in suffixes:
+        url = website.rstrip("/") + suffix
+        soup = fetch_and_parse(url)
+        if soup:
+            print(f"🔍 Parsed HTML from {url}")
+            pages.append(soup)
 
     # Fallback to homepage
-    if not text:
-        text = fetch_and_parse(website)
+    if not pages:
+        fallback = fetch_and_parse(website)
+        if fallback:
+            print(f"🔍 Fallback to homepage: {website}")
+            pages.append(fallback)
 
-    if not text:
+    if not pages:
         return {"email": "Error fetching site", "phone": "Error fetching site"}
 
-    # Use regex to find potential contact info
-    email_match = re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", text)
-    phone_match = re.search(r"(\+?\d[\d\-\(\) ]{7,}\d)", text)
+    # Initialize
+    email, email_context = "Not found", "No context found"
+    phone, phone_context = "Not found", "No context found"
 
-    email = email_match.group(0) if email_match else "Not found"
-    phone = phone_match.group(0) if phone_match else "Not found"
+    for soup in pages:
+        # Remove scripts and styles
+        for script in soup(["script", "style"]):
+            script.decompose()
+
+        # Search for emails
+        email_match = soup.find(string=re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"))
+        if email_match:
+            email = email_match.strip()
+            container = email_match.find_parent("div") or email_match.find_parent()
+            email_context = container.get_text(separator="\n", strip=True) if container else "No context found"
+            break
+
+    for soup in pages:
+        # Same cleaning
+        for script in soup(["script", "style"]):
+            script.decompose()
+
+        phone_match = soup.find(string=re.compile(r"(\+?\d[\d\-\(\) ]{7,}\d)"))
+        if phone_match:
+            phone = phone_match.strip()
+            container = phone_match.find_parent("div") or phone_match.find_parent()
+            phone_context = container.get_text(separator="\n", strip=True) if container else "No context found"
+            break
 
     return {
         "email": email,
-        "phone": phone
+        "email_context": email_context,
+        "phone": phone,
+        "phone_context": phone_context
     }
+
 
 
 def get_products(state):
@@ -165,6 +197,38 @@ def build_graph():
 
 # -------------------- CLI --------------------
 
+def print_results(company_name, official_url, email, email_context, phone, phone_context, products):
+    print("\n🔍 Pharma Lookup - Powered by Gemini Flash\n")
+
+    print(f"🔹 Company Name: {company_name.title()}")
+    print(f"🔗 Official Website: {official_url}\n")
+
+    print("📞 Contact Information:")
+    print("───────────────────────")
+    if phone != "Not found":
+        print(f"{phone_context.strip()}\n📞 {phone.strip()}\n")
+    else:
+        print("📞 Phone: Not found\n")
+
+    if email != "Not found":
+        print("📨 Email Contacts:")
+        print("───────────────────────")
+        print(f"📧 {email}")
+        print(f"📄 Context: {email_context}\n")
+    else:
+        print("📨 Email: Not found\n")
+
+    if products:
+        print("💊 Key Products:")
+        print("───────────────────────")
+        for i, prod in enumerate(products, 1):
+            print(f"{i}. {prod}")
+    else:
+        print("💊 Key Products: None found")
+
+    print("\n" + "━" * 60 + "\n")
+
+
 def main():
     print("🔍 Pharma Lookup - Powered by Gemini Flash")
     company = input("Enter a pharmaceutical company name: ").strip()
@@ -176,14 +240,16 @@ def main():
     app = build_graph()
     result = app.invoke({"company": company})
 
-    print("\n🔍 Pharma Info Lookup Result:")
-    print("=" * 40)
-    print("🏢 Company:", company)
-    print("🔗 Website:", result.get("website"))
-    print("📧 Email:", result.get("email"))
-    print("📞 Phone:", result.get("phone"))
-    print("💊 Key Products:\n", result.get("products"))
-    print("=" * 40)
+    # Extract results from the graph output
+    official_url = result.get("website", "Not found")
+    email = result.get("email", "Not found")
+    email_context = result.get("email_context", "No context found")
+    phone = result.get("phone", "Not found")
+    phone_context = result.get("phone_context", "No context found")
+    products = result.get("products", "").split("\n") if result.get("products") else []
+
+    # Call the print_results function to display the output
+    print_results(company, official_url, email, email_context, phone, phone_context, products)
 
 
 if __name__ == "__main__":
